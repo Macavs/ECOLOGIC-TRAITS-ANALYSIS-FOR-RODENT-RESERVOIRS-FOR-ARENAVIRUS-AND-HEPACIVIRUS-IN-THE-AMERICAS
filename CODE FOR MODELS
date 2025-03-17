@@ -65,6 +65,8 @@ registerDoParallel(cores = 4)
 
 ###READ DATABASE FILES (THESE FILES ALREADY HAVE PCOA AXIS ACCOUNTING FOR 80% OF THE VARIATION IN RODENT PHYLOGENY AND PUBMED CITATIONS FOR RODENT SPECIES)
 ##This code was runned for the arena_neartic excel sheet but can be edited to analyses the other excel sheet (i.e., hepa_neotropical, arena_neotropical)
+#Data of phylogeny was obtained from: https://megapast2future.github.io/PHYLACINE_1.2/
+#Data of biological traits was obtained from Pantheria, COMBINE, Phylacine.
 hepa_neo=read.xlsx("modelo_7_11_24.xlsx", sheet="hepa_neotropical")
 head(hepa_neo)
 hepa_nea=read.xlsx("modelo_7_11_24.xlsx", sheet="hepa_nearctic")
