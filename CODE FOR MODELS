@@ -1,0 +1,815 @@
+---
+title: ECOLOGIC TRAITS ANALYSIS FOR IDENTIFYING RODENT RESERVOIRS FOR ARENAVIRUS AND
+  HEPACIVIRUS IN THE AMERICAS
+author: "María del Carmen Villalobos-Segura, Oscar Rico-Chavéz, Gerardo Suzán, Andrea
+  Chaves"
+date: "2025-03-04"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#"This code was edited for the code available in: Mull, N., Carlson, C. J., Forbes, K. M. & Becker, D. J. (2022). Virus isolation data improve host predictions for New World rodent orthohantaviruses. Journal of Animal Ecology, 91, 1290–1302. https://doi-org.pbidi.unam.mx:2443/10.1111/1365-2656.13694 "
+
+## This file contains the code BRT´s for the identification of key ecological traits associated with infection of arenavirus and hepacivirus, as well as potential unsampled rodent hosts for these viruses in the Neartic and Neotropical biogeographic regions the Americas.
+
+
+###SET DIRECTORY
+setwd()
+library(openxlsx)
+library(dplyr)
+library(tidyr)
+library(letsR)
+library(easyPubMed)
+library(gbm)
+library(fastDummies)
+library(rsample)
+library(ROCR)
+library(sciplot)
+library(ggplot2)
+library(pdp)
+library(PresenceAbsence)
+library(tidyr)
+library(viridis)
+library(caper)
+library(phylofactor)
+library(ggtree)
+library(treeio)
+library(InformationValue)
+library(mgcv)
+library(caTools)
+library(survival)
+library(lattice)
+library(splines)
+library(parallel)
+library(GGally)
+library(dismo)
+library(tidyverse)
+library(caret)
+library(picante)
+library(ape)
+library(fossil)
+library(corrr)
+library(ggtreeExtra)
+library(doParallel) 
+library(patchwork)
+library(sf)
+library(dplyr)
+library(ggplot2)
+library(rnaturalearth)
+library(rnaturalearthdata)
+registerDoParallel(cores = 4)
+
+
+###READ DATABASE FILES (THESE FILES ALREADY HAVE PCOA AXIS ACCOUNTING FOR 80% OF THE VARIATION IN RODENT PHYLOGENY AND PUBMED CITATIONS FOR RODENT SPECIES)
+##This code was runned for the arena_neartic excel sheet but can be edited to analyses the other excel sheet (i.e., hepa_neotropical, arena_neotropical)
+hepa_neo=read.xlsx("modelo_7_11_24.xlsx", sheet="hepa_neotropical")
+head(hepa_neo)
+hepa_nea=read.xlsx("modelo_7_11_24.xlsx", sheet="hepa_nearctic")
+head(hepa_nea)
+arena_neo=read.xlsx("modelo_7_11_24.xlsx", sheet="arena_neotropical")
+head(arena_neo)
+arena_nea=read.xlsx("modelo_7_11_24.xlsx", sheet="arena_nearctic")
+head(arena_nea)
+
+
+
+### For this example, will be running the model for arenavirus nearctic set or arena_nea
+###GENERATING DUMMY VARIABLES FOR GENUS
+dums=dummy_cols(arena_nea["GENUS"])
+## unique
+dums=dums[!duplicated(dums$GENUS),]
+## ensure all factor
+for(i in 1:ncol(dums)){
+  
+  ## column as factor
+  dums[,i]=factor(dums[,i])
+  
+}
+## merge
+data=merge(arena_nea,dums,by="GENUS",all.x=T)
+head(data)
+rm(dums)
+
+###REMOVING THE COLUMNS WE ARE NOT GOING TO USE IN THE ANALYSIS
+data$GENUS=NULL
+data$ORDER=NULL
+data$SPECIES=NULL
+data$FAMILY=NULL
+data$BIOGEOGRAPHIC.REGION=NULL
+data$SPECIES=NULL
+
+head(data)
+
+####EXCLUDE 100 % HOMOGENOUS COLUMNS AND WITH LESS THAN 70% COVERAGE
+## mode function
+mode.prop <- function(x) {
+  ux <- unique(x[is.na(x)==FALSE])
+  tab <- tabulate(match(na.omit(x), ux))
+  max(tab)/length(x[is.na(x)==FALSE])
+}
+
+## assess variation across columns
+vars=data.frame(apply(data,2,function(x) mode.prop(x)),
+                apply(data,2,function(x) length(unique(x))))
+
+## get names
+vars$variables=rownames(vars)
+names(vars)=c("var","uniq","column")
+vars$var=round(vars$var,2)
+
+## if homogenous (100%)
+vars$keep=ifelse(vars$var<1,"keep","cut")
+vars$keep=ifelse(vars$column%in%'hPCR','keep',vars$keep)
+vars=vars[order(vars$keep),]
+table(vars$keep)
+
+## trim
+keeps=vars[-which(vars$keep=="cut"),]$column
+
+## drop if no variation
+data=data[keeps]
+
+rm(keeps,vars)
+
+## assess missing values
+mval=data.frame(apply(data,2,function(x) length(x[!is.na(x)])/nrow(data)))
+
+## get names
+mval$variables=rownames(mval)
+names(mval)=c("comp","column")
+## changed 25% to 70%
+mval$comp=round(mval$comp,2)
+mval$keep=ifelse(mval$comp>=0.70,"keep","cut")
+table(mval$keep)
+mval=mval[order(mval$keep),]
+keeps=mval[-which(mval$keep=="cut"),]$column
+
+## order
+mval=mval[order(mval$comp),]
+
+## drop if not well represented
+data=data[keeps]
+rm(mval,keeps)
+head(data)
+
+###CORRELATION AMONG VARIABLES
+corr_set=data
+corr_set$PHYLACINE_NAME=NULL
+corr_set$NAME=NULL
+corr_set$hPCR=NULL
+colnames(corr_set)
+cor_test=corr_set %>% correlate()%>%stretch() %>% 
+  arrange(r)
+
+###DROP VARIABLES WITH OVER 70% CORRELATION
+#check on corr_set which variable is going to be excluded
+data$dispersal_km=NULL
+data$gestation.length.d=NULL
+head(data)
+
+###PREPARING DATA FOR THE BRT ANALYSIS
+data$X=NULL
+data$SPECIES=NULL
+colnames(data)
+str(data)
+
+##CHANGING DATA OF HABITAT TO FACTOR SO IS POSSIBLE TO PLOT PDP GRAPHS
+data <- data %>%
+  mutate(across(13:24, as.factor))
+set=data
+colnames(set)
+set$PHYLACINE_NAME=NULL
+set <-set %>% dplyr::select(hPCR, everything())
+colnames(data)
+
+##SEARCH GRID TO FIND BEST HYPERPARAMETERS
+hgrid=expand.grid(n.trees=5000,
+                    interaction.depth=c(2,3,4,5),
+                    shrinkage=c(0.01,0.001,0.0005),
+                    n.minobsinnode=4,
+                    optimal_trees = 0,
+                    RMSE = NA,
+                    seed=seq(1,10,by=1))
+  
+  ## fix trees
+  hgrid$n.trees=ifelse(hgrid$shrinkage<0.001,hgrid$n.trees*3,hgrid$n.trees)
+  
+  ## trees, depth, shrink, min, prop
+  hgrid$id=with(hgrid,paste(n.trees,interaction.depth,shrinkage,n.minobsinnode))
+  
+  ## sort by id then seed
+  hgrid=hgrid[order(hgrid$id,hgrid$seed),]
+  
+  ## now add rows
+  hgrid$row=1:nrow(hgrid)
+  
+  ## factor id
+  hgrid$id2=factor(as.numeric(factor(hgrid$id)))
+  
+  ## function to assess each hyperpar combination
+  hfit=function(row,response){
+    
+    ## make new data
+    ndata=set
+    
+    ## correct response
+    ndata$response=ndata[response][,1]
+    
+    ## remove raw
+    ndata$hPCR=NULL
+    
+    
+    ## use rsample to split
+    set.seed(hgrid$seed[row])
+    split=initial_split(ndata,prop=0.7,strata="response")
+    
+    ## test and train
+    dataTrain=training(split)
+    dataTest=testing(split)
+    
+    ## yTest and yTrain
+    yTrain=dataTrain$response
+    yTest=dataTest$response
+    
+    ## BRT
+    set.seed(1)
+    gbmOut=gbm(response ~ . ,data=dataTrain,
+               n.trees=hgrid$n.trees[row],
+               distribution="bernoulli",
+               shrinkage=hgrid$shrinkage[row],
+               interaction.depth=hgrid$interaction.depth[row],
+               n.minobsinnode=hgrid$n.minobsinnode[row],
+               cv.folds=5,class.stratify.cv=TRUE,
+               bag.fraction=0.5,train.fraction=1,
+               n.cores=1,
+               verbose=F)
+    
+    ## performance
+    par(mfrow=c(1,1),mar=c(4,4,1,1))
+    best.iter=gbm.perf(gbmOut,method="cv")
+    
+    ## predict with test data
+    preds=predict(gbmOut,dataTest,n.trees=best.iter,type="response")
+    
+    ## known
+    result=dataTest$response
+    
+    ## sensitiviy and specificity
+    sen=InformationValue::sensitivity(result,preds)
+    spec=InformationValue::specificity(result,preds)
+    
+    ## AUC on train
+    auc_train=gbm.roc.area(yTrain,predict(gbmOut,dataTrain,n.trees=best.iter,type="response"))
+    
+    ## AUC on test
+    auc_test=gbm.roc.area(yTest,predict(gbmOut,dataTest,n.trees=best.iter,type="response"))
+    
+    ## print
+    print(paste("hpar row ",row," done; test AUC is ",auc_test,sep=""))
+    
+    ## save outputs
+    return(list(best=best.iter,
+                trainAUC=auc_train,
+                testAUC=auc_test,
+                spec=spec,
+                sen=sen,
+                wrow=row))
+  }
+  
+  
+  ## run the function
+  hpars=lapply(1:nrow(hgrid),function(x) hfit(x,response="hPCR"))
+  
+  ## get results
+  hresults=data.frame(sapply(hpars,function(x) x$trainAUC),
+                      sapply(hpars,function(x) x$testAUC),
+                      sapply(hpars,function(x) x$spec),
+                      sapply(hpars,function(x) x$sen),
+                      sapply(hpars,function(x) x$wrow),
+                      sapply(hpars,function(x) x$best))
+  names(hresults)=c("trainAUC","testAUC",
+                    "spec","sen","row","best")
+  
+  ## combine and save
+  hsearch=merge(hresults,hgrid,by="row")
+  
+  ## save
+  hsearch$type="RT-PCR"
+  
+
+## combine and save
+csearch=merge(hresults,hgrid,by="row")
+
+###RUNNING THE BRT´s WITH THE SELECTED HYPERPARAMETERS
+brt_part=function(seed,response){
+  
+  ## make new data
+  ndata=set
+  
+  ## correct response
+  ndata$response=ndata[response][,1]
+  
+  ## remove raw
+  ndata$hPCR=NULL
+
+  
+  ## fix cites if response
+  if(response=="cites"){
+    
+    ## plus 1 for 0
+    ndata$cites=ifelse(ndata$cites==0,1,ndata$cites)
+    
+  }else{
+    
+    ndata=ndata
+    
+  }
+  
+  ## use rsample to split
+  set.seed(seed)
+  split=initial_split(ndata,prop=0.8,strata="response")
+  
+  ## test and train
+  dataTrain=training(split)
+  dataTest=testing(split)
+  
+  ## yTest and yTrain
+  yTrain=dataTrain$response
+  yTest=dataTest$response
+  
+  ## dist
+  dist=ifelse(response=="cites","poisson","bernoulli")
+  
+  ## n.trees
+  nt=ifelse(response=="cites",15000,5000)
+  
+  ## BRT
+  set.seed(1)
+  gbmOut=gbm(response ~ . ,data=dataTrain,
+             n.trees=nt,
+             distribution=dist,
+             shrinkage=1e-02,
+             interaction.depth=2,
+             n.minobsinnode=4,
+             cv.folds=5,class.stratify.cv=TRUE,
+             bag.fraction=0.5,train.fraction=1,
+             n.cores=1,
+             verbose=F)
+  
+  ## performance
+  par(mfrow=c(1,1),mar=c(4,4,1,1))
+  best.iter=gbm.perf(gbmOut,method="cv")
+  
+  ## predict with test data
+  preds=predict(gbmOut,dataTest,n.trees=best.iter,type="response")
+  
+  ## known
+  result=dataTest$response
+  
+  ## sensitiviy and specificity
+  sen=InformationValue::sensitivity(result,preds)
+  spec=InformationValue::specificity(result,preds)
+  
+  ## AUC on train
+  auc_train=gbm.roc.area(yTrain,predict(gbmOut,dataTrain,n.trees=best.iter,type="response"))
+  
+  ## AUC on test
+  auc_test=gbm.roc.area(yTest,predict(gbmOut,dataTest,n.trees=best.iter,type="response"))
+  
+  ## skip if poisson
+  if(response=="cites"){
+    
+    perf=NA
+    
+  }else{
+    
+    ## inner loop if yTest is all 0
+    if(var(yTest)==0){
+      
+      perf=NA
+    }else{
+      
+      ## ROC
+      pr=prediction(preds,dataTest$response)
+      perf=performance(pr,measure="tpr",x.measure="fpr")
+      perf=data.frame(perf@x.values,perf@y.values)
+      names(perf)=c("fpr","tpr")
+      
+      ## add seed
+      perf$seed=seed
+      
+    }
+  }
+  
+  ## relative importance
+  bars=summary(gbmOut,n.trees=best.iter,plotit=F)
+  bars$rel.inf=round(bars$rel.inf,2)
+  
+  ## predict with cites
+  preds=predict(gbmOut,data,n.trees=best.iter,type="response")
+  pred_data=data[c("PHYLACINE_NAME","hPCR")]
+  pred_data$pred=preds
+  pred_data$type=response
+  
+  ## predict with mean cites
+  pdata=data
+  pdata$cites=mean(pdata$cites)
+  pred_data$cpred=predict(gbmOut,pdata,n.trees=best.iter,type="response")
+  
+  ## sort
+  pred_data=pred_data[order(pred_data$pred,decreasing=T),]
+  
+  ## print
+  print(paste("BRT ",seed," done; test AUC = ",auc_test,sep=""))
+  
+  ## save outputs
+  return(list(mod=gbmOut,
+              best=best.iter,
+              trainAUC=auc_train,
+              testAUC=auc_test,
+              spec=spec,
+              sen=sen,
+              roc=perf,
+              rinf=bars,
+              predict=pred_data,
+              traindata=dataTrain,
+              testdata=dataTest,
+              seed=seed))
+}
+
+## apply across 10 splits each
+smax=101
+arena_nea_pcr_brts_2025=lapply(1:smax,function(x) brt_part(seed=x,response="hPCR"))
+## index non-missing
+pcr_keep=which(!is.na(sapply(arena_neo_pcr_brts_2025,function(x) x$testAUC)))
+## trim
+arena_neo_pcr_brts_2025=arena_neo_pcr_brts_2025[pcr_keep]
+
+###OBTAINING ACCURACY (AUC), SENSIBILITY AND SPECIFICITY FOR THE MODELS
+## get net AUC
+mean(sapply(arena_neo_pcr_brts_2025,function(x) x$testAUC))
+se(sapply(arena_neo_pcr_brts_2025,function(x) x$testAUC))
+
+## get net sensitivity
+mean(sapply(arena_neo_pcr_brts_2025,function(x) x$sen))
+se(sapply(arena_neo_pcr_brts_2025,function(x) x$sen))
+
+## get net specificity
+mean(sapply(arena_neo_pcr_brts_2025,function(x) x$spec))
+se(sapply(arena_neo_pcr_brts_2025,function(x) x$spec))
+
+
+##OBTAINING VARIABLES IMPORTANCE
+## relative importance for PCR
+vinf=lapply(arena_neo_pcr_brts_2025,function(x) x$rinf)
+pcr_vinf=do.call(rbind,vinf)
+
+
+## aggregate mean, SE, and var
+vdata_pcr=data.frame(aggregate(rel.inf~var,data=pcr_vinf,mean),
+                     aggregate(rel.inf~var,data=pcr_vinf,se)["rel.inf"],
+                     aggregate(rel.inf~var,data=pcr_vinf,var)["rel.inf"])
+names(vdata_pcr)=c("var","rel.inf","rse","rvar")
+vdata_pcr=vdata_pcr[order(vdata_pcr$rel.inf,decreasing=T),]
+
+
+## compare mean var
+mean(vdata_pcr$rvar)
+
+
+## compare variance in mean var
+var(vdata_pcr$rel.inf)
+
+
+## rank
+vdata_pcr$pcr_rank=1:nrow(vdata_pcr)
+
+## rel inf
+vdata_pcr$pcr_imp=vdata_pcr$rel.inf/100
+
+
+## combine ranks
+ranks=vdata_pcr[c("var","pcr_rank","pcr_imp")]
+
+## ranks for table S5
+ts5=ranks
+ts5$feature=ts5$var
+ts5=ts5[c("feature","pcr_imp","pcr_rank")]
+
+## trim to non-zero
+ranks2=ranks[-which(ranks$pcr_imp==0),]
+
+## rerank
+ranks2=ranks2[order(ranks2$pcr_imp,decreasing=T),]
+ranks2$pcr_rank=1:nrow(ranks2)
+#saving list of rank predictors
+write.table(ranks2, "variable_imp_arena_neo_2025.1.txt")
+
+###GENERATING PDP GRAPHS OF THE PREDICTORS VARIABLES
+## pdp
+detach("package:purrr", unload=TRUE)
+library(pdp)
+library(gbm)
+library(patchwork)
+
+## function for compiling across BRTs for a given predictor, all else equal
+pdp_agg=function(mod,feature){
+  
+  ## just the plot function
+  pdep=plot(mod$mod,feature,
+            return.grid=T,
+            n.trees=mod$best,
+            plot=F,
+            continuous.resolution=200,
+            type="response")
+  
+  ## add seed
+  pdep$seed=unique(mod$roc$seed)
+  
+  ## save predictor
+  pdep$predictor=pdep[feature][,1]
+  
+  ## order
+  pdep=pdep[order(pdep$predictor),]
+  
+  ## get rank
+  pdep$rank=1:nrow(pdep)
+  
+  ## save yhat
+  pdep$yhat=pdep$y
+  
+  ## return
+  return(pdep)
+  
+}
+
+## function to plot
+pdp_plot=function(bmods,feature){
+  
+  ## pdp_agg
+  agg=do.call(rbind,lapply(bmods,function(x) pdp_agg(x,feature)))
+  
+  ## get class of the feature
+  cl=class(data[feature][,1])
+  
+  ## if else based on type
+  if(cl%in%c("numeric","integer")){
+    
+    ## get element-wise means
+    x=with(agg,tapply(predictor,rank,mean))
+    y=with(agg,tapply(yhat,rank,mean))
+    
+    ## save as mean
+    pmean=data.frame(predictor=x,yhat=y)
+    
+    ## get yrange
+    yrange=range(agg$yhat,pmean$yhat,na.rm=T)
+    
+    ## get histogram
+    hi=hist(data[feature][,1],breaks=30,plot=F)
+    hi=with(hi,data.frame(breaks[1:(length(breaks)-1)],counts))
+    names(hi)=c("mids","counts")
+    
+    ## ggplot it
+    ggplot(agg,aes(predictor,yhat,group=seed))+
+      
+      ## add histogram
+      geom_segment(data=hi,inherit.aes=F,
+                   aes(x=mids,xend=mids,
+                       y=yrange[1],yend=plotrix::rescale(counts,yrange)),
+                   size=1,colour="grey",alpha=0.25)+
+      
+      ## add lines
+      geom_line(size=1,alpha=0.25,colour="grey")+
+      
+      ## add mean
+      geom_line(data=pmean,size=2,inherit.aes=F,colour="red",
+                aes(predictor,yhat))+
+      
+      ## theme
+      theme_bw()+
+      theme(axis.text=element_text(size=16),
+            axis.title=element_text(size=16),
+            axis.text.x = element_text(size=14, colour="black"),
+            axis.text.y = element_text(size=14, colour="black"))+
+      theme(panel.grid.major=element_blank(),panel.grid.minor=element_blank())+
+      labs(x="diet",y="Marginal effect")+
+      scale_x_continuous(limits = c(0,90), breaks = seq(0,90, by =5))     +
+      scale_y_continuous(labels=scales::number_format(accuracy=0.01))
+    
+    ## end numeric
+  }else{ ## factor-based plot
+    
+    ## get element-wise means
+    y=with(agg,tapply(yhat,predictor,mean))
+    
+    ## save as mean
+    #pmean=data.frame(predictor=x,yhat=y)
+    pmean=data.frame(y)
+    names(pmean)="yhat"
+    pmean$predictor=rownames(pmean)
+    rownames(pmean)=NULL
+    
+    ## make temp data
+    temp=data
+    temp$predictor=temp[feature][,1]
+    
+    ## do nothing
+    agg=agg
+    pmean=pmean
+    temp=temp
+    
+    ## get yrange
+    yrange=range(agg$yhat,pmean$yhat,na.rm=T)
+    
+    ## fix temp to yrange
+    temp$yhat=ifelse(temp$hPCR==1,max(yrange),min(yrange))
+    
+    ## ggplot with rug
+    set.seed(1)
+    ggplot(agg,aes(predictor,yhat,group=seed))+
+      
+      ## add individual BRTs
+      geom_jitter(size=1,alpha=0.25,colour="grey",width=0.1)+
+      
+      ## add mean
+      geom_point(data=pmean,size=2,inherit.aes=F,shape=15,
+                 aes(predictor,yhat))+
+      
+      ## add rug
+      geom_rug(data=temp,inherit.aes=F,
+               aes(predictor,yhat),
+               sides="b",position="jitter",
+               colour="grey",alpha=0.25,
+               na.rm=T)+
+      
+      ## theme
+      theme_bw()+
+      theme(axis.text=element_text(size=16),
+            axis.title=element_text(size=16),
+            axis.text.x = element_text(size=14, colour="black"),
+            axis.text.y = element_text(size=14, colour="black"))+
+      theme(panel.grid.major=element_blank(),panel.grid.minor=element_blank())+
+      labs(x="diet",y="Marginal effect")+
+      scale_x_continuous(limits = c(0,90), breaks = seq(0,90, by =5))    +
+      scale_y_continuous(limits=c(yrange[1]-0.01,yrange[2]+0.01),
+                         labels=scales::number_format(accuracy=0.01))
+    
+  }
+  
+}
+
+
+## top PCR
+ranks2=ranks2[order(ranks2$pcr_rank),]
+p1=pdp_plot(arena_neo_pcr_brts_2025,ranks2$var[1])
+p2=pdp_plot(arena_neo_pcr_brts_2025,ranks2$var[2])
+p3=pdp_plot(arena_neo_pcr_brts_2025,ranks2$var[3])
+p4=pdp_plot(arena_neo_pcr_brts_2025,ranks2$var[4])
+p5=pdp_plot(arena_neo_pcr_brts_2025,ranks2$var[5])
+p6=pdp_plot(arena_neo_pcr_brts_2025,ranks2$var[6])
+p7=pdp_plot(arena_nea_pcr_brts,ranks2$var[7])
+p8=pdp_plot(arena_neo_pcr_brts_2025,ranks2$var[8])
+p9=pdp_plot(arena_neo_pcr_brts_2025,ranks2$var[9])
+p10=pdp_plot(arena_neo_pcr_brts_2025,ranks2$var[10])
+
+
+##PLOT THE FIRST 5 TOP PREDICTORS IN ONE IMAGE
+p1+p2+p3+p4+p5+plot_layout(nrow=3,ncol=2,byrow=F)
+
+
+##GENERATE AVERAGE PREDICTIONS FOR RODENT SPECIES IN THE MODELS
+## average predictions: PCR
+pcr_apreds=lapply(arena_nea_pcr_brts_2025,function(x) x$predict)
+
+pcr_apreds=do.call(rbind,pcr_apreds)
+
+## aggregate
+pcr_apreds=data.frame(aggregate(pred~PHYLACINE_NAME,data=pcr_apreds,mean),
+                      aggregate(hPCR~PHYLACINE_NAME,data=pcr_apreds,prod)["hPCR"])
+
+## type
+pcr_apreds$type='PCR'
+
+## write file
+write.csv(pcr_apreds,"arena_nearctic_predictions_2025.1.csv")
+
+###POTENTIAL UNSAMPLED HOSTS
+## Read in the data
+pred <- read_csv("arena_neotropical_predictions_2025.1.csv")
+head(pred)
+## 1. Threshold the results
+
+library(PresenceAbsence)
+
+###INTERMISSION: THRESHOLD IMPACTS
+
+ts.p <- optimal.thresholds(data.frame(pred[,c('PHYLACINE_NAME','hPCR','pred')]),
+                           threshold = 10001,
+                           opt.methods = c(2,4,5,10),
+                           req.sens = 0.90,
+                           na.rm = TRUE)
+
+cut.p <- function(x) {sum(pred$pred[pred$hPCR==0] > x)}
+
+sapply(unlist(ts.p[2]), cut.p)
+
+
+###MOVE FORWARD
+
+t.pcr <- optimal.thresholds(data.frame(pred[,c('PHYLACINE_NAME','hPCR','pred')]),
+                            threshold = 10001,
+                            opt.methods = 10,
+                            req.sens = 0.95,
+                            na.rm = TRUE)
+
+
+## Threshold the results to binary outputs
+
+pred %>%
+  mutate(bin_pcr = (pred) > t.pcr$pred) -> pred
+
+## How many predicted undiscovered hosts by PCR?
+
+table(pred$pred[pred$hPCR==0] > t.pcr$pred)
+
+pred %>% filter(hPCR==1) %>% pull(PHYLACINE_NAME) %>% gsub("_"," ",.) -> known.pcr
+
+pred %>% filter(bin_pcr==1) %>% pull(PHYLACINE_NAME) %>% gsub("_"," ",.) -> pred.pcr
+
+sort(pred.pcr[!(pred.pcr %in% known.pcr)])
+
+###DISTRIBUTION MAPS FOR POTENTIAL UNSAMPLED HOSTS
+##selecting the Americas
+americas <- ne_countries(continent = c("North America", "South America"), 
+                         scale = "medium", returnclass = "sf")
+##MAMMALS_TERRESTRIAL_ONLY can be downloaded from https://www.iucnredlist.org/resources/spatial-data-download
+mammals <- st_read(dsn="~/", layer="MAMMALS_TERRESTRIAL_ONLY")
+unique_species <- unique(mammals$sci_name)
+print(unique_species)
+#scientific names of potential sample hosts for each model
+species_name <- c("Neotoma fuscipes", "Nelsonia neotomodon")
+
+## Filter the mammals data for these species
+species_data <- mammals %>% filter(sci_name %in% species_list)
+species_data_list <- split(species_data, species_data$sci_name)
+## Get the boundaries of the Americas
+americas <- ne_countries(continent = c("North America", "South America"), returnclass = "sf")
+## Transform species data and Americas boundaries to the same CRS
+species_data <- st_transform(species_data, crs = st_crs(americas))
+americas <- st_transform(americas, crs = st_crs(species_data))
+## Get the bounding box of the species data
+bbox <- st_bbox(americas)
+r <- rast(xmin = bbox["xmin"], xmax = bbox["xmax"], ymin = bbox["ymin"], ymax = bbox["ymax"], res = 0.1, crs = st_crs(americas)$proj4string)
+## Rasterize species distributions
+raster_list <- lapply(split(species_data, species_data$sci_name), function(x) {
+  rasterize(vect(x), r, field = 1, background = 0)
+})
+
+## Remove empty rasters
+raster_list <- raster_list[sapply(raster_list, function(x) {
+  !all(is.na(values(x)))
+})]
+
+## Check if any rasters are left
+if (length(raster_list) == 0) {
+  stop("All species rasters are empty after removing empty rasters.")
+}
+
+## Stack the rasters into a single SpatRaster object
+richness_stack <- rast(raster_list)
+# Sum the stack to create the richness raster
+richness_raster <- sum(richness_stack, na.rm = TRUE)
+
+## Mask the richness raster to the Americas
+richness_raster_masked <- mask(richness_raster, vect(americas))
+
+## Convert raster to data frame
+df <- as.data.frame(richness_raster_masked, xy = TRUE, na.rm = FALSE)
+
+## Replace NA values with 0 for areas with no data
+df$sum[is.na(df$sum)] <- 0
+h1=ggplot() +
+  geom_raster(data = df, aes(x = x, y = y, fill = sum)) +
+  geom_sf(data = americas, fill = NA, color = "black") +  # Add continent contours
+  scale_fill_gradientn(
+    colours = c("white", magma(40)),
+    values = scales::rescale(c(0, 1, max(df$sum, na.rm = TRUE))),
+    na.value = "white",
+    name = "Predicted rodent species\n distribution overlap"
+  ) +
+  coord_sf(xlim = c(-170, -30), ylim = c(-60, 80)) +  # Adjusted to show only the Americas
+  labs(
+    title = "Heatmap with the distribution of predicted rodent species\n in the Nearctic region (Arenavirus)",
+    x = "Longitude",
+    y = "Latitude"
+  ) +
+  theme_bw() +  # White background
+  theme(
+    panel.grid = element_blank(),        # Remove grid lines
+    panel.border = element_blank(),      # Remove panel border
+    axis.line = element_line(color = "black")
+  )
