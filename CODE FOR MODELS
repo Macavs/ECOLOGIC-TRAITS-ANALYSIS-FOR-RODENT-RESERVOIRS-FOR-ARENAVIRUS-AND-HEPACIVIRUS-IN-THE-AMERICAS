@@ -9,8 +9,8 @@ output: pdf_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-#"This code was edited for the code available in: Mull, N., Carlson, C. J., Forbes, K. M. & Becker, D. J. (2022). Virus isolation data improve host predictions for New World rodent orthohantaviruses. Journal of Animal Ecology, 91, 1290–1302. https://doi-org.pbidi.unam.mx:2443/10.1111/1365-2656.13694 "
-
+#"The original code used is available in: Mull, N., Carlson, C. J., Forbes, K. M. & Becker, D. J. (2022). Virus isolation data improve host predictions for New World rodent orthohantaviruses. Journal of Animal Ecology, 91, 1290–1302. https://doi-org.pbidi.unam.mx:2443/10.1111/1365-2656.13694 "
+#We modified this code according to are data.
 ## This file contains the code BRT´s for the identification of key ecological traits associated with infection of arenavirus and hepacivirus, as well as potential unsampled rodent hosts for these viruses in the Neartic and Neotropical biogeographic regions the Americas.
 
 
